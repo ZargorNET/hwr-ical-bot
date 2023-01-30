@@ -1,18 +1,20 @@
 use std::str::FromStr;
-use chrono::{Local, NaiveDateTime, TimeZone};
+
+use chrono::{Local, TimeZone};
 use icalendar::{CalendarDateTime, Component, DatePerhapsTime, Event};
-use serenity::builder::{CreateEmbed};
+use serenity::builder::CreateEmbed;
 use serenity::utils::Color;
+
 use crate::fetcher::Diff;
 
 const DATE_FORMAT: &str = "%a, %d.%m.%y %R";
 const MAX_EVENT_LIMIT: usize = 10;
 
-pub fn build_embed(diff: Vec<Diff>) -> CreateEmbed {
-    let date_and_time = Local::now().format(DATE_FORMAT).to_string();
-    let title = format!("Stundenplanänderungen {}", &date_and_time);
+pub fn build_embed(diff: Vec<Diff>, title_course: &str) -> Vec<CreateEmbed> {
+    let now = Local::now();
+    let date_and_time = now.format(DATE_FORMAT).to_string();
+    let title = format!("Stundenplanänderungen {} {}", title_course, &date_and_time);
 
-    let mut changes = String::from("```diff\n");
 
     let mut created = Vec::new();
     let mut removed = Vec::new();
@@ -31,19 +33,47 @@ pub fn build_embed(diff: Vec<Diff>) -> CreateEmbed {
     truncate_event_vec(&mut created);
     truncate_event_vec(&mut removed);
 
-    created.into_iter().for_each(|s| changes.push_str(&s));
-    removed.into_iter().for_each(|s| changes.push_str(&s));
-
-    changes.push_str("```");
-
 
     let mut embed = CreateEmbed::default();
     embed
         .title(title)
-        .color(Color::new(0x33cd09)) // green
-        .description(changes);
+        .timestamp(now)
+        .footer(|f| f.text("Stundenplan in Google Kalendar: https://hwrical.zrgr.pw"));
 
-    embed
+    let removed_string = create_end_string(removed);
+    let created_string = create_end_string(created);
+
+    let mut removed_embed = embed.clone();
+    removed_embed
+        .description(&removed_string)
+        .color(Color::new(0xFF0000));
+
+    let mut created_embed = embed.clone();
+    created_embed
+        .description(&created_string)
+        .color(Color::new(0x00FF00));
+
+    let mut result_vec = Vec::with_capacity(2);
+    if !removed_string.is_empty() {
+        result_vec.push(removed_embed)
+    }
+    if !created_string.is_empty() {
+        result_vec.push(created_embed);
+    }
+
+    result_vec
+}
+
+fn create_end_string(diff_strings: Vec<String>) -> String {
+    if diff_strings.is_empty() {
+        return String::new();
+    }
+
+    let mut changes = String::from("```diff\n");
+    diff_strings.into_iter().for_each(|s| changes.push_str(&s));
+    changes.push_str("```");
+
+    changes
 }
 
 fn truncate_event_vec(vec: &mut Vec<String>) {

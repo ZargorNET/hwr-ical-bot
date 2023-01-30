@@ -1,44 +1,45 @@
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+
 use anyhow::anyhow;
 use icalendar::{Calendar, CalendarComponent, Component, Event};
 use serenity::http::Http;
-
 use serenity::model::id::ChannelId;
+
+use crate::Config;
 use crate::embed_builder::build_embed;
 
-const FILE_LOCATION: &str = "prevcal.ics";
-
-pub struct RunConfig {
-    pub channel_id: ChannelId,
-    pub discord_http: Arc<Http>,
-    pub ics_url: String,
-}
-
-pub fn run(config: RunConfig) {
-    let mut interval = tokio::time::interval(Duration::from_secs(10 * 60));
+pub fn run(http: Arc<Http>, config: Config) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
 
     tokio::spawn(async move {
         loop {
             let result: anyhow::Result<()> = try {
                 interval.tick().await;
 
-                let new_calendar = fetch_ics(&config.ics_url).await?;
-                let prev_calendar = get_prev_calendar().await?.unwrap_or(Calendar::new());
+                for endpoint in &config.endpoints {
+                    let path = format!("prev_cal_{}.ics", endpoint.display_name.replace(" ", "_"));
 
-                let diff = compare_calendars(&new_calendar, &prev_calendar);
+                    let new_calendar = fetch_ics(&endpoint.ics_url).await?;
+                    let prev_calendar = get_prev_calendar(&path).await?.unwrap_or(Calendar::new());
 
-                if !diff.is_empty() {
-                    let embed = build_embed(diff);
+                    let diff = compare_calendars(&new_calendar, &prev_calendar);
 
-                    config.channel_id.send_message(&config.discord_http, |builder| {
-                        builder.set_embed(embed)
-                    }).await?;
+                    if !diff.is_empty() {
+                        let embeds = build_embed(diff, &endpoint.display_name);
+
+                        for embed in embeds {
+                            ChannelId(endpoint.channel_id).send_message(&http, |builder| {
+                                builder.set_embed(embed)
+                            }).await?;
+                        }
+                    }
+
+
+                    save_calendar(&new_calendar, &path).await?;
                 }
-
-
-                save_calendar(&new_calendar).await?;
             };
 
             if let Err(e) = result {
@@ -113,18 +114,20 @@ fn get_event_by_uid<'a>(cal: &'a Calendar, uid: &str) -> Option<&'a Event> {
         .find(|e| e.get_uid().unwrap() == uid)
 }
 
-async fn get_prev_calendar() -> anyhow::Result<Option<Calendar>> {
-    if !std::path::Path::new(FILE_LOCATION).exists() {
+async fn get_prev_calendar(path: impl AsRef<Path>) -> anyhow::Result<Option<Calendar>> {
+    let path = path.as_ref();
+
+    if !path.exists() {
         return Ok(None);
     }
 
-    let file = tokio::fs::read_to_string(FILE_LOCATION).await?;
+    let file = tokio::fs::read_to_string(path).await?;
 
     Ok(Some(Calendar::from_str(&file).map_err(|e| anyhow!(e))?))
 }
 
-async fn save_calendar(calendar: &Calendar) -> anyhow::Result<()> {
-    tokio::fs::write(FILE_LOCATION, calendar.to_string()).await?;
+async fn save_calendar(calendar: &Calendar, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    tokio::fs::write(path, calendar.to_string()).await?;
 
     Ok(())
 }
