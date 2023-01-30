@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::anyhow;
-use icalendar::{Calendar, CalendarComponent, Component, Event};
+use chrono::{DateTime, Local, TimeZone};
+use chrono_tz::Tz;
+use icalendar::{Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, Event};
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
 
@@ -12,7 +13,7 @@ use crate::Config;
 use crate::embed_builder::build_embed;
 
 pub fn run(http: Arc<Http>, config: Config) {
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
 
     tokio::spawn(async move {
         loop {
@@ -68,6 +69,7 @@ pub enum Diff<'a> {
 }
 
 fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> {
+    let now = Local::now();
     let mut diff = Vec::new();
 
     // Check for new or changed events
@@ -75,6 +77,10 @@ fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> 
         if let CalendarComponent::Event(e) = component {
             if e.get_uid().is_none() {
                 println!("Warn: Event {} has no UID", e.get_summary().unwrap_or_default());
+                continue;
+            }
+
+            if !is_in_future(&e, &now) {
                 continue;
             }
 
@@ -102,6 +108,7 @@ fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> 
         .filter_map(|c| c.as_event())
         .filter(|e| e.get_uid().is_some())
         .filter(|e| get_event_by_uid(new, e.get_uid().unwrap()).is_none())
+        .filter(|e| is_in_future(e, &now))
         .for_each(|e| diff.push(Diff::Removed(e)));
 
     diff
@@ -130,4 +137,26 @@ async fn save_calendar(calendar: &Calendar, path: impl AsRef<Path>) -> anyhow::R
     tokio::fs::write(path, calendar.to_string()).await?;
 
     Ok(())
+}
+
+fn is_in_future(event: &Event, now: &DateTime<Local>) -> bool {
+    let Some(end_time) = event.get_end() else { return true; };
+    let Some(date_time) = parse_date_time(&end_time) else { return true; };
+
+    date_time >= *now
+}
+
+fn parse_date_time(date: &DatePerhapsTime) -> Option<DateTime<Local>> {
+    match date {
+        DatePerhapsTime::DateTime(dt) => match dt {
+            CalendarDateTime::Floating(f) => Some(f.and_local_timezone(Local).unwrap()),
+            CalendarDateTime::Utc(utc) => Some(utc.with_timezone(&Local)),
+            CalendarDateTime::WithTimezone { date_time, tzid } => {
+                Tz::from_str(&tzid).map_or(None, |tz| {
+                    Some(tz.from_local_datetime(&date_time).unwrap().with_timezone(&Local))
+                })
+            }
+        }
+        DatePerhapsTime::Date(_) => None
+    }
 }
