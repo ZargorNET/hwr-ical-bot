@@ -14,6 +14,10 @@ mod embed_builder;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if !Path::new("data/").exists() {
+        tokio::fs::create_dir_all("data/").await?;
+    }
+
     let config_path = Path::new("config.toml");
     if !config_path.exists() {
         println!("Created config file.");
@@ -29,6 +33,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     fetcher::run(client.cache_and_http.http.clone(), config);
+
+    println!("Started!");
 
     client.start().await?;
 

@@ -20,7 +20,7 @@ pub fn run(http: Arc<Http>, config: Config) {
                 interval.tick().await;
 
                 for endpoint in &config.endpoints {
-                    let path = format!("prev_cal_{}.ics", endpoint.display_name.replace(" ", "_"));
+                    let path = format!("data/prev_cal_{}.ics", endpoint.display_name.replace(" ", "_"));
 
                     let new_calendar = fetch_ics(&endpoint.ics_url).await?;
                     let prev_calendar = get_prev_calendar(&path).await?.unwrap_or(Calendar::new());
