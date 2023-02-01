@@ -8,46 +8,50 @@ use chrono_tz::Tz;
 use icalendar::{Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, Event};
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
+use tracing::{debug, error, info, warn};
 
 use crate::Config;
 use crate::embed_builder::build_embed;
 
 pub fn run(http: Arc<Http>, config: Config) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
-
     tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+
         loop {
-            let result: anyhow::Result<()> = try {
-                interval.tick().await;
-
-                for endpoint in &config.endpoints {
-                    let path = format!("data/prev_cal_{}.ics", endpoint.display_name.replace(" ", "_"));
-
-                    let new_calendar = fetch_ics(&endpoint.ics_url).await?;
-                    let prev_calendar = get_prev_calendar(&path).await?.unwrap_or(Calendar::new());
-
-                    let diff = compare_calendars(&new_calendar, &prev_calendar);
-
-                    if !diff.is_empty() {
-                        let embeds = build_embed(diff, &endpoint.display_name);
-
-                        for embed in embeds {
-                            ChannelId(endpoint.channel_id).send_message(&http, |builder| {
-                                builder.set_embed(embed)
-                            }).await?;
-                        }
-                    }
-
-
-                    save_calendar(&new_calendar, &path).await?;
-                }
-            };
-
-            if let Err(e) = result {
-                eprintln!("Error while executing loop: {}", e);
+            interval.tick().await;
+            if let Err(e) = run_loop(&http, &config).await {
+                error!("Error while executing loop: {}", e);
             }
         }
     });
+}
+
+async fn run_loop(http: &Arc<Http>, config: &Config) -> anyhow::Result<()> {
+    info!("Running loop...");
+
+    for endpoint in &config.endpoints {
+        debug!("Running {}", &endpoint.display_name);
+        let path = format!("data/prev_cal_{}.ics", endpoint.display_name.replace(" ", "_"));
+
+        let new_calendar = fetch_ics(&endpoint.ics_url).await?;
+        let prev_calendar = get_prev_calendar(&path).await?.unwrap_or(Calendar::new());
+
+        let diff = compare_calendars(&new_calendar, &prev_calendar);
+
+        if !diff.is_empty() {
+            let embeds = build_embed(diff, &endpoint.display_name);
+
+            for embed in embeds {
+                ChannelId(endpoint.channel_id).send_message(&http, |builder| {
+                    builder.set_embed(embed)
+                }).await?;
+            }
+        }
+
+
+        save_calendar(&new_calendar, &path).await?;
+    }
+    Ok(())
 }
 
 async fn fetch_ics(url: &str) -> anyhow::Result<Calendar> {
@@ -76,7 +80,7 @@ fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> 
     for component in new.components.iter() {
         if let CalendarComponent::Event(e) = component {
             if e.get_uid().is_none() {
-                println!("Warn: Event {} has no UID", e.get_summary().unwrap_or_default());
+                warn!("Warn: Event {} has no UID", e.get_summary().unwrap_or_default());
                 continue;
             }
 
@@ -91,7 +95,14 @@ fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> 
             match other {
                 None => diff.push(Diff::Created(e)),
                 Some(other) => {
-                    if e != other {
+                    // Clone to ignore DTSTAMP on compare
+                    let mut cloned_e = e.clone();
+                    let mut cloned_other = other.clone();
+
+                    cloned_e.timestamp(DateTime::<Tz>::MIN_UTC);
+                    cloned_other.timestamp(DateTime::<Tz>::MIN_UTC);
+
+                    if cloned_e != cloned_other {
                         diff.push(Diff::Changed {
                             new: e,
                             old: other,
@@ -110,6 +121,8 @@ fn compare_calendars<'a>(new: &'a Calendar, old: &'a Calendar) -> Vec<Diff<'a>> 
         .filter(|e| get_event_by_uid(new, e.get_uid().unwrap()).is_none())
         .filter(|e| is_in_future(e, &now))
         .for_each(|e| diff.push(Diff::Removed(e)));
+
+    debug!("{} differences found", diff.len());
 
     diff
 }
